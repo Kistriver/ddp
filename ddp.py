@@ -22,19 +22,27 @@ class VersionException(DdpException):
 
 
 class Ddp(object):
-    __version__ = 1
+    __version__ = 2
 
-    T_BINARY = bytes([0])
-    T_INTEGER = bytes([1])
-    T_NEGATIVE_INTEGER = bytes([2])
-    T_FLOAT = bytes([3])
-    T_STRING = bytes([4])
-    T_BOOLEAN = bytes([5])
-    T_NULL = bytes([6])
-    T_MAP = bytes([7])
-    T_ARRAY = bytes([8])
+    T_BINARY = 0
+    T_INTEGER = 1
+    T_NEGATIVE_INTEGER = 2
+    T_FLOAT = 3
+    T_COMPLEX = 4
+    T_STRING = 5
+    T_BOOLEAN_FALSE = 6
+    T_BOOLEAN_TRUE = 7
+    T_NULL = 8
+    T_MAP = 9
+    T_ARRAY = 10
+    T_RESERVED_11 = 11
+    T_RESERVED_12 = 12
+    T_RESERVED_13 = 13
+    T_RESERVED_14 = 14
+    T_RESERVED_15 = 15
 
-    KEY_T_ALLOW = [T_BINARY, T_INTEGER, T_NEGATIVE_INTEGER, T_FLOAT, T_STRING, T_BOOLEAN, T_NULL]
+    KEY_T_ALLOW = [T_BINARY, T_INTEGER, T_NEGATIVE_INTEGER, T_COMPLEX,
+                   T_FLOAT, T_STRING, T_BOOLEAN_FALSE, T_BOOLEAN_TRUE, T_NULL]
 
     def __init__(self):
         pass
@@ -43,19 +51,27 @@ class Ddp(object):
     def encode(cls, data, version=True):
         v = bytes(0)
         if version:
-            v = cls._int_pack(cls.__version__)
+            v = cls._int_pack((0b0 << 7) + (cls.__version__ & 0b01111111))
         t, d = cls._encode(data)
-        ld = cls._encode(len(d))[1]
-        lld = cls._encode(len(ld))[1]
+        if len(d) == 0:
+            ld = d = bytes(0)
+            lld = bytes([0])
+        else:
+            ld = cls._encode(len(d))[1]
+            lld = cls._encode(len(ld))[1]
+
+        ts = (0b1 << 7) + ((t & 0b00001111) << 3) + (lld[0] & 0b00000111)
         """
-        VTSLD
-        V - Version (1 byte)
-        T - Type (1 byte)
-        S - Size of L (1 byte)
+        (HVVV VVVV)(HTTT TSSS)<L><D>
+        H - Is it header byte (1 bit)  > |
+        V - Version (7 bits)           > | (1 byte)
+        H - Is it header byte (1 bit)  > |
+        T - Type (4 bits)              > |
+        S - Size of L (3 bits)         > | (1 byte)
         L - Lengths of D (`S` bytes)
-        D - Data (`L` bytes)
+        D - Data (`L` bytes) (max size of data is 2**(8*(2**3 - 1)) - 1 = 65536 TB)
         """
-        return v + t + lld + ld + d
+        return v + bytes([ts]) + ld + d
 
     @classmethod
     def _encode(cls, data):
@@ -68,9 +84,15 @@ class Ddp(object):
         elif isinstance(data, float):
             t = cls.T_FLOAT
             d = str(data).encode()
+        elif isinstance(data, complex):
+            t = cls.T_COMPLEX
+            d = cls.encode(data.real, version=False) + cls.encode(data.imag, version=False)
         elif isinstance(data, bool):
-            t = cls.T_BOOLEAN
-            d = bytes([data])
+            if data:
+                t = cls.T_BOOLEAN_TRUE
+            else:
+                t = cls.T_BOOLEAN_FALSE
+            d = bytes(0)
         elif isinstance(data, int):
             if data >= 0:
                 t = cls.T_INTEGER
@@ -110,18 +132,19 @@ class Ddp(object):
             return cls._decode(data)[0]
 
     @classmethod
-    def _decode(cls, data, version=True):
+    def _decode(cls, data):
         i = 0
-        if version:
+        # version
+        v = (data[i] & 0b10000000) >> 7
+        if v == 0:
             # version
-            v = cls._int_unpack(bytes([data[i]]))
+            v = cls._int_unpack(bytes([data[i] & 0b01111111]))
             i += 1
             cls.supported(v)
         # type
-        t = bytes([data[i]])
-        i += 1
+        t = (data[i] & 0b01111000) >> 3
         # length length
-        ll = cls._int_unpack(bytes([data[i]]))
+        ll = cls._int_unpack(bytes([data[i] & 0b00000111]))
         i += 1
         # length
         l = data[i:i + ll]
@@ -135,15 +158,18 @@ class Ddp(object):
             d = d
         elif t == cls.T_FLOAT:
             d = float(d)
+        elif t == cls.T_COMPLEX:
+            real, d, _ = cls._decode(d)
+            imag, _, _ = cls._decode(d)
+            d = complex(real, imag)
         elif t == cls.T_INTEGER:
             d = cls._int_unpack(d)
         elif t == cls.T_NEGATIVE_INTEGER:
             d = -cls._int_unpack(d)
-        elif t == cls.T_BOOLEAN:
-            if d == bytes([0]):
-                d = False
-            else:
-                d = True
+        elif t == cls.T_BOOLEAN_FALSE:
+            d = False
+        elif t == cls.T_BOOLEAN_TRUE:
+            d = True
         elif t == cls.T_NULL:
             d = None
         elif t == cls.T_STRING:
@@ -152,16 +178,16 @@ class Ddp(object):
             osti = d
             d = {}
             while len(osti) > 0:
-                ki, osti, ti = cls._decode(osti, version=False)
+                ki, osti, ti = cls._decode(osti)
                 if ti not in cls.KEY_T_ALLOW:
                     raise KeyException("Key type not allowed: type(%s) value(%s)" % (hex(ti[0]), repr(ki)))
-                vi, osti, ti = cls._decode(osti, version=False)
+                vi, osti, ti = cls._decode(osti)
                 d[ki] = vi
         elif t == cls.T_ARRAY:
             osti = d
             d = []
             while len(osti) > 0:
-                di, osti, ti = cls._decode(osti, version=False)
+                di, osti, ti = cls._decode(osti)
                 d.append(di)
         else:
             raise TypeException("Not supported: %s" % hex(t))
@@ -192,6 +218,6 @@ class Ddp(object):
 
     @classmethod
     def supported(cls, version):
-        supv = [1]
+        supv = [2]
         if version not in supv:
             raise VersionException("Version %i is not compatible with %i" % (cls.__version__, version))
