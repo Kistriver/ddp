@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 __author__ = "Kachalov Alexey"
-__version__ = 1
+__version__ = '2.1'
 
 import logging
 
@@ -86,7 +86,8 @@ class Ddp(object):
             d = str(data).encode()
         elif isinstance(data, complex):
             t = cls.T_COMPLEX
-            d = cls.encode(data.real, version=False) + cls.encode(data.imag, version=False)
+            d = cls.encode(data.real, version=False) + \
+                cls.encode(data.imag, version=False)
         elif isinstance(data, bool):
             if data:
                 t = cls.T_BOOLEAN_TRUE
@@ -110,7 +111,8 @@ class Ddp(object):
             t = cls.T_MAP
             d = bytes(0)
             for k, v in data.items():
-                d += cls.encode(k, version=False) + cls.encode(v, version=False)
+                d += cls.encode(k, version=False) + \
+                     cls.encode(v, version=False)
         elif isinstance(data, list):
             t = cls.T_ARRAY
             d = bytes(0)
@@ -133,27 +135,8 @@ class Ddp(object):
 
     @classmethod
     def _decode(cls, data):
-        i = 0
-        # version
-        v = (data[i] & 0b10000000) >> 7
-        if v == 0:
-            # version
-            v = cls._int_unpack(bytes([data[i] & 0b01111111]))
-            i += 1
-            cls.supported(v)
-        # type
-        t = (data[i] & 0b01111000) >> 3
-        # length length
-        ll = cls._int_unpack(bytes([data[i] & 0b00000111]))
-        i += 1
-        # length
-        l = data[i:i + ll]
-        if isinstance(l, int):
-            l = bytes([l])
-        l = cls._int_unpack(l)
+        v, t, d, ost = cls._decode_headers(data)
 
-        d = data[i + ll:i + ll + l]
-        ost = data[i + ll + l:]
         if t == cls.T_BINARY:
             d = d
         elif t == cls.T_FLOAT:
@@ -180,7 +163,9 @@ class Ddp(object):
             while len(osti) > 0:
                 ki, osti, ti = cls._decode(osti)
                 if ti not in cls.KEY_T_ALLOW:
-                    raise KeyException("Key type not allowed: type(%s) value(%s)" % (hex(ti[0]), repr(ki)))
+                    raise KeyException(
+                        "Key type not allowed: type(%s) value(%s)" %
+                        (hex(ti[0]), repr(ki)))
                 vi, osti, ti = cls._decode(osti)
                 d[ki] = vi
         elif t == cls.T_ARRAY:
@@ -220,4 +205,99 @@ class Ddp(object):
     def supported(cls, version):
         supv = [2]
         if version not in supv:
-            raise VersionException("Version %i is not compatible with %i" % (cls.__version__, version))
+            raise VersionException(
+                "Version %i is not compatible with %i" %
+                (cls.__version__, version))
+
+    @classmethod
+    def _decode_version(cls, data):
+        if isinstance(data, int):
+            data = bytes([data])
+
+        # version
+        v = (data[0] & 0b10000000) >> 7
+        if v == 0:
+            # version
+            v = cls._int_unpack(bytes([data[0] & 0b01111111]))
+            cls.supported(v)
+            return v
+        else:
+            return None
+
+    @classmethod
+    def _decode_header(cls, data):
+        if isinstance(data, int):
+            data = bytes([data])
+
+        # type
+        t = (data[0] & 0b01111000) >> 3
+        # length length
+        ll = cls._int_unpack(bytes([data[0] & 0b00000111]))
+        return t, ll
+
+    @classmethod
+    def _decode_length(cls, data, ll):
+        if isinstance(data, int):
+            data = bytes([data])
+
+        # length
+        l = data[:ll]
+        if isinstance(l, int):
+            l = bytes([l])
+        l = cls._int_unpack(l)
+        return l
+
+    @classmethod
+    def _decode_data(cls, data, l):
+        d = data[:l]
+        ost = data[l:]
+        return d, ost
+
+    @classmethod
+    def _decode_headers(cls, data):
+        i = 0
+        v = cls._decode_version(data[i])
+        if v is None:
+            t, ll = cls._decode_header(data[i])
+        else:
+            i += 1
+            t, ll = cls._decode_header(data[i])
+
+        i += 1
+        l = cls._decode_length(data[i:], ll)
+        i += ll
+        d, ost = cls._decode_data(data[i:], l)
+        return v, t, d, ost
+
+
+class DdpSocket(Ddp):
+    @classmethod
+    def decode(cls, data, ost=False):
+        if ost:
+            return cls._decode(data)[0:1]
+        else:
+            return cls._decode(data)[0]
+
+    @classmethod
+    def _decode_headers(cls, socket):
+        if isinstance(socket, bytes):
+            return super()._decode_headers(socket)
+
+        h = socket.recv(1)
+        v = cls._decode_version(h)
+        if v is None:
+            t, ll = cls._decode_header(h)
+        else:
+            t, ll = cls._decode_header(socket.recv(1))
+
+        l = cls._decode_length(socket.recv(ll), ll)
+        d, ost = cls._decode_data(socket.recv(l), l)
+        return v, t, d, ost
+
+    @classmethod
+    def encode(cls, data, version=True, socket=None):
+        d = super().encode(data, version)
+        if socket:
+            socket.send(d)
+
+        return d
