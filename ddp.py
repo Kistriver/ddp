@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__author__ = "Kachalov Alexey"
+__author__ = "Alexey Kachalov"
 __version__ = '3.0'
 
 import logging

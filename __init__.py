@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-__author__ = "Kachalov Alexey"
+__author__ = "Alexey Kachalov"
 
-from ddp import *
+from .ddp import *
